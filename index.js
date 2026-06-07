@@ -13,9 +13,55 @@ const path = require("path");
 const ES_PATH = process.env.ES_PATH || "C:\\Program Files\\Everything\\es.exe";
 
 /**
+ * Split a query string into tokens, respecting quoted substrings.
+ * e.g. 'nvidia ext:appx;appxbundle' -> ['nvidia', 'ext:appx;appxbundle']
+ *      'parent:"C:\\Users\\Me\\Downloads"' -> ['parent:"C:\\Users\\Me\\Downloads"']
+ *      '*.jpg size:>1mb' -> ['*.jpg', 'size:>1mb']
+ */
+function tokenizeQuery(query) {
+  const tokens = [];
+  let current = "";
+  let inQuotes = false;
+  for (const ch of query) {
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      current += ch;
+    } else if (ch === " " && !inQuotes) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+/**
+ * Detect and wrap raw Windows paths with path: prefix so es.exe handles them
+ * correctly. Everything GUI auto-detects paths but es.exe does not.
+ * e.g. 'C:\\Users\\Me\\Downloads\\' -> 'path:C:\\Users\\Me\\Downloads\\'
+ *      '\\server\share\'               -> 'path:\\server\share\'
+ *      'ext:mp4'                       -> 'ext:mp4'          (unchanged)
+ *      'nvidia'                        -> 'nvidia'           (unchanged)
+ */
+function wrapRawPath(token) {
+  if (/^[a-zA-Z]:[\\/]/.test(token) || token.startsWith("\\\\")) {
+    return "path:" + token;
+  }
+  return token;
+}
+
+/**
  * Execute es.exe with the given arguments
  */
 function executeEverything(args) {
+  console.error("[everything-mcp] es.exe", JSON.stringify(args));
+
   return new Promise((resolve, reject) => {
     const process = spawn(ES_PATH, args);
     let stdout = "";
@@ -177,7 +223,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     if (name === "search") {
       const {
-        query,
+        query = "",
         maxResults = 50,
         regex = false,
         caseSensitive = false,
@@ -222,8 +268,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (showSize) esArgs.push("-size");
       if (showDateModified) esArgs.push("-date-modified");
 
-      // Add the search query
-      esArgs.push(query);
+      // Add the search query (split into tokens for es.exe)
+      if (query) {
+        esArgs.push(...tokenizeQuery(query).map(wrapRawPath).map((t) => t.replace(/"/g, "")));
+      }
 
       const result = await executeEverything(esArgs);
 
